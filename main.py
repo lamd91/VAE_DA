@@ -1,27 +1,27 @@
-#import os
+import os
 #os.environ["CUDA_VISIBLE_DEVICES"]="-1" # uncomment if you don't want to use the GPU
 import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
 from IPython import display
 from tensorflow.python.client import device_lib
+
 print(device_lib.list_local_devices())
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
-# Define global constants to be used
+# Define global constants to be used in this script
 BATCH_SIZE=32
 LATENT_DIM=2
 
 def map_image(image):
-    '''returns a normalized and reshaped tensor from a given image'''
+    '''returns a reshaped tensor from a given image'''
     image = tf.cast(image, dtype=tf.float32)
     image = tf.reshape(image, shape=(50, 500, 1,))
 
     return image
 
-
 def get_dataset(map_fn, is_validation=False):
-    '''Loads and prepares the mnist dataset from TFDS.'''
+    """Loads and prepares the dataset from a 2D array loaded from a text file."""
     dataset = np.transpose(np.loadtxt('data/iniMPSimEns_1000.txt'))
     nb_images = dataset.shape[1]
     if is_validation:
@@ -38,14 +38,17 @@ def get_dataset(map_fn, is_validation=False):
 
     return dataset
 
-train_dataset = get_dataset(map_image)
+def display_three_train_images(train_dataset):
+    """Display 3 images from the training dataset"""
+    plt.figure(figsize=(10, 15))
+    for images in train_dataset.take(1):
+        for i in range(3):
+            plt.subplot(3, 1, i+1)
+            plt.imshow(images[i].numpy().astype('uint8'))
+    plt.show()
 
-plt.figure(figsize=(10, 15))
-for images in train_dataset.take(1):
-    for i in range(3):
-        plt.subplot(3, 1, i+1)
-        plt.imshow(images[i].numpy().astype('uint8'))
-plt.show()
+train_dataset = get_dataset(map_image)
+display_three_train_images(train_dataset)
 
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
