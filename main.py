@@ -1,42 +1,34 @@
-# This is a sample Python script.
-
-# Press Maj+F10 to execute it or replace it with your code.
-# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
-
 #import os
-#os.environ["CUDA_VISIBLE_DEVICES"]="-1"
-
+#os.environ["CUDA_VISIBLE_DEVICES"]="-1" # uncomment if you don't want to use the GPU
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
 from matplotlib import pyplot as plt
 from IPython import display
 from tensorflow.python.client import device_lib
 print(device_lib.list_local_devices())
 print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
-# Define global constants to be used in this notebook
-BATCH_SIZE=128
+# Define global constants to be used
+BATCH_SIZE=32
 LATENT_DIM=2
 
-
-def map_image(image, label):
+def map_image(image):
     '''returns a normalized and reshaped tensor from a given image'''
     image = tf.cast(image, dtype=tf.float32)
-    image = image / 255.0
-    image = tf.reshape(image, shape=(28, 28, 1,))
+    image = tf.reshape(image, shape=(50, 500, 1,))
 
     return image
 
 
 def get_dataset(map_fn, is_validation=False):
     '''Loads and prepares the mnist dataset from TFDS.'''
+    dataset = np.transpose(np.loadtxt('data/iniMPSimEns_1000.txt'))
+    nb_images = dataset.shape[1]
     if is_validation:
-        split_name = "test"
+        dataset = tf.data.Dataset.from_tensor_slices(dataset[int(nb_images*0.7):])
     else:
-        split_name = "train"
+        dataset = tf.data.Dataset.from_tensor_slices(dataset[0:int(nb_images*0.7)])
 
-    dataset = tfds.load('mnist', as_supervised=True, split=split_name)
     dataset = dataset.map(map_fn)
 
     if is_validation:
@@ -48,6 +40,12 @@ def get_dataset(map_fn, is_validation=False):
 
 train_dataset = get_dataset(map_image)
 
+plt.figure(figsize=(10, 15))
+for images in train_dataset.take(1):
+    for i in range(3):
+        plt.subplot(3, 1, i+1)
+        plt.imshow(images[i].numpy().astype('uint8'))
+plt.show()
 
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
@@ -237,7 +235,7 @@ def get_models(input_shape, latent_dim):
     return encoder, decoder, vae
 
 # Get the encoder, decoder and 'master' model (called vae)
-encoder, decoder, vae = get_models(input_shape=(28, 28, 1,), latent_dim=LATENT_DIM)
+encoder, decoder, vae = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
 
 # Define our loss functions and optimizers
 optimizer = tf.keras.optimizers.Adam()
