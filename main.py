@@ -44,11 +44,22 @@ def display_three_train_images(train_dataset):
     for images in train_dataset.take(1):
         for i in range(3):
             plt.subplot(3, 1, i+1)
-            plt.imshow(images[i].numpy().astype('uint8'))
+            plt.imshow(images[i].numpy().astype('uint8'), cmap='gray')
     plt.show()
 
 train_dataset = get_dataset(map_image)
 display_three_train_images(train_dataset)
+
+# get image dimensions
+for images in train_dataset.take(1):
+    height, width = images.shape[1], images.shape[2]
+
+# define decision variables for adding Cropping2D layers in decoder layers
+topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
+leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
+topcrop_after_upsampling2 = (height % 2 != 0)
+leftcrop_after_upsampling2 = (width % 2 != 0)
+#print(topcrop_after_upsampling1, leftcrop_after_upsampling1, topcrop_after_upsampling2, leftcrop_after_upsampling2)
 
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
@@ -134,7 +145,8 @@ def encoder_model(latent_dim, input_shape):
 
     return model, conv_shape
 
-def decoder_layers(inputs, conv_shape):
+def decoder_layers(inputs, conv_shape, topcrop_after_upsampling1, leftcrop_after_upsampling1,
+                   topcrop_after_upsampling2, leftcrop_after_upsampling2):
     """Defines the decoder layers.
     Args:
       inputs -- output of the encoder
@@ -153,12 +165,21 @@ def decoder_layers(inputs, conv_shape):
     x = tf.keras.layers.Reshape((conv_shape[1], conv_shape[2], conv_shape[3]), name="decode_reshape")(x)
 
     # upsample the features back to the original dimensions
+    # for that, make sure to add Cropping2D layers after upsampling when needed
     x = tf.keras.layers.Conv2DTranspose(filters=64, kernel_size=3, strides=2, padding='same', activation='relu',
                                         name="decode_conv2d_2")(x)
     x = tf.keras.layers.BatchNormalization()(x)
+    if topcrop_after_upsampling1:
+        x = tf.keras.layers.Cropping2D(cropping=((1, 0), (0, 0)))(x)
+    if leftcrop_after_upsampling1:
+        x = tf.keras.layers.Cropping2D(cropping=((0, 0), (1, 0)))(x)
     x = tf.keras.layers.Conv2DTranspose(filters=32, kernel_size=3, strides=2, padding='same', activation='relu',
                                         name="decode_conv2d_3")(x)
     x = tf.keras.layers.BatchNormalization()(x)
+    if topcrop_after_upsampling2:
+        x = tf.keras.layers.Cropping2D(cropping=((1, 0), (0, 0)))(x)
+    if leftcrop_after_upsampling2:
+        x = tf.keras.layers.Cropping2D(cropping=((0, 0), (1, 0)))(x)
     x = tf.keras.layers.Conv2DTranspose(filters=1, kernel_size=3, strides=1, padding='same', activation='sigmoid',
                                         name="decode_final")(x)
 
@@ -178,7 +199,8 @@ def decoder_model(latent_dim, conv_shape):
     inputs = tf.keras.layers.Input(shape=(latent_dim,))
 
     # get the output of the decoder layers
-    outputs = decoder_layers(inputs, conv_shape)
+    outputs = decoder_layers(inputs, conv_shape, topcrop_after_upsampling1, leftcrop_after_upsampling1,
+                   topcrop_after_upsampling2, leftcrop_after_upsampling2)
 
     # declare the inputs and outputs of the model
     model = tf.keras.Model(inputs, outputs)
@@ -240,13 +262,16 @@ def get_models(input_shape, latent_dim):
 # Get the encoder, decoder and 'master' model (called vae)
 encoder, decoder, vae = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
 
+#encoder.summary()
+#decoder.summary()
+
 # Define our loss functions and optimizers
 optimizer = tf.keras.optimizers.Adam()
 loss_metric = tf.keras.metrics.Mean()
 bce_loss = tf.keras.losses.BinaryCrossentropy()
 
 def generate_and_save_images(model, epoch, step, test_input):
-    """Helper function to plot our 16 images
+    """Helper function to plot our 8 images
 
     Args:
 
@@ -260,10 +285,10 @@ def generate_and_save_images(model, epoch, step, test_input):
     predictions = model.predict(test_input)
 
     # plot the results
-    fig = plt.figure(figsize=(4, 4))
+    fig = plt.figure(figsize=(12, 14))
 
     for i in range(predictions.shape[0]):
-        plt.subplot(4, 4, i + 1)
+        plt.subplot(8, 1, i + 1)
         plt.imshow(predictions[i, :, :, 0], cmap='gray')
         plt.axis('off')
 
@@ -273,10 +298,10 @@ def generate_and_save_images(model, epoch, step, test_input):
     #plt.show()
 
 
-# Training loop.
+# Training loop
 
 # generate random vector as test input to the decoder
-random_vector_for_generation = tf.random.normal(shape=[16, LATENT_DIM])
+random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
 
 # number of epochs
 epochs = 100
@@ -287,7 +312,7 @@ generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 for epoch in range(epochs):
     print('Start of epoch %d' % (epoch,))
 
-    # iterate over the batches of the dataset.
+    # iterate over the batches of the dataset
     for step, x_batch_train in enumerate(train_dataset):
         with tf.GradientTape() as tape:
 
@@ -297,7 +322,7 @@ for epoch in range(epochs):
             # compute reconstruction loss
             flattened_inputs = tf.reshape(x_batch_train, shape=[-1])
             flattened_outputs = tf.reshape(reconstructed, shape=[-1])
-            loss = bce_loss(flattened_inputs, flattened_outputs) * 784
+            loss = bce_loss(flattened_inputs, flattened_outputs) * 25000
 
             # add KLD regularization loss
             loss += sum(vae.losses)
