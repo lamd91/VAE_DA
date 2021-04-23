@@ -320,7 +320,6 @@ cp_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath = checkpoint_path,
     verbose = 1,
     save_weights_only = True,
-    #save_freq = 'epoch'
     save_freq = 10 * BATCH_SIZE
 )
 
