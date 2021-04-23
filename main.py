@@ -1,16 +1,16 @@
-import os
+#import os
 #os.environ["CUDA_VISIBLE_DEVICES"]="-1" # uncomment if you don't want to use the GPU
 import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
 from IPython import display
+from tqdm import tqdm
 from tensorflow.python.client import device_lib
 
 print(device_lib.list_local_devices())
-print("Num GPUs Available: ", len(tf.config.experimental.list_physical_devices('GPU')))
 
-# Define global constants to be used in this script
-BATCH_SIZE=32
+# Define global constants
+BATCH_SIZE = 32
 LATENT_DIM=2
 
 def map_image(image):
@@ -40,26 +40,12 @@ def get_dataset(map_fn, is_validation=False):
 
 def display_three_train_images(train_dataset):
     """Display 3 images from the training dataset"""
-    plt.figure(figsize=(10, 15))
+    plt.figure(figsize=(10, 14))
     for images in train_dataset.take(1):
         for i in range(3):
             plt.subplot(3, 1, i+1)
-            plt.imshow(images[i].numpy().astype('uint8'), cmap='gray')
+            plt.imshow(np.squeeze(images[i].numpy()).astype('uint8'), cmap='gray')
     plt.show()
-
-train_dataset = get_dataset(map_image)
-display_three_train_images(train_dataset)
-
-# get image dimensions
-for images in train_dataset.take(1):
-    height, width = images.shape[1], images.shape[2]
-
-# define decision variables for adding Cropping2D layers in decoder layers
-topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
-leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
-topcrop_after_upsampling2 = (height % 2 != 0)
-leftcrop_after_upsampling2 = (width % 2 != 0)
-#print(topcrop_after_upsampling1, leftcrop_after_upsampling1, topcrop_after_upsampling2, leftcrop_after_upsampling2)
 
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
@@ -110,7 +96,7 @@ def encoder_layers(inputs, latent_dim):
     # flatten the features and feed into the Dense network
     x = tf.keras.layers.Flatten(name="encode_flatten")(batch_2)
 
-    # we arbitrarily used 20 units here but feel free to change and see what results you get
+    # we arbitrarily used 20 units here but feel free to change
     x = tf.keras.layers.Dense(20, activation='relu', name="encode_dense")(x)
     x = tf.keras.layers.BatchNormalization()(x)
 
@@ -144,6 +130,22 @@ def encoder_model(latent_dim, input_shape):
     model = tf.keras.Model(inputs, outputs=[mu, sigma, z])
 
     return model, conv_shape
+
+# Load and prepare image dataset
+train_dataset = get_dataset(map_image)
+display_three_train_images(train_dataset)
+
+# Get image dimensions
+for images in train_dataset.take(1):
+    height, width = images.shape[1], images.shape[2]
+
+# Define decision variables for adding Cropping2D layers in decoder layers
+topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
+leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
+topcrop_after_upsampling2 = (height % 2 != 0)
+leftcrop_after_upsampling2 = (width % 2 != 0)
+# print(topcrop_after_upsampling1, leftcrop_after_upsampling1,
+#       topcrop_after_upsampling2, leftcrop_after_upsampling2)
 
 def decoder_layers(inputs, conv_shape, topcrop_after_upsampling1, leftcrop_after_upsampling1,
                    topcrop_after_upsampling2, leftcrop_after_upsampling2):
@@ -233,7 +235,6 @@ def vae_model(encoder, decoder, input_shape):
     Returns:
       the complete VAE model
     """
-
     # set the inputs
     inputs = tf.keras.layers.Input(shape=input_shape)
 
@@ -259,16 +260,23 @@ def get_models(input_shape, latent_dim):
     vae = vae_model(encoder, decoder, input_shape=input_shape)
     return encoder, decoder, vae
 
-# Get the encoder, decoder and 'master' model (called vae)
-encoder, decoder, vae = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+def train_step(model, optimizer, loss_object, x_batch):
+    with tf.GradientTape() as tape:
+        # feed a batch to the VAE model
+        reconstructed = model(x_batch)
+        # compute reconstruction loss
+        flattened_inputs = tf.reshape(x_batch, [-1])
+        flattened_outputs = tf.reshape(reconstructed, [-1])
+        loss = loss_object(flattened_inputs, flattened_outputs) \
+               * x_batch.shape[1] * x_batch.shape[2]
+        # add KLD regularization loss
+        loss += sum(model.losses)
 
-#encoder.summary()
-#decoder.summary()
+    # get the gradients and update model weights
+    grads = tape.gradient(loss, model.trainable_weights)
+    optimizer.apply_gradients(zip(grads, model.trainable_weights))
 
-# Define our loss functions and optimizers
-optimizer = tf.keras.optimizers.Adam()
-loss_metric = tf.keras.metrics.Mean()
-bce_loss = tf.keras.losses.BinaryCrossentropy()
+    return loss
 
 def generate_and_save_images(model, epoch, step, test_input):
     """Helper function to plot our 8 images
@@ -278,7 +286,7 @@ def generate_and_save_images(model, epoch, step, test_input):
     model -- the decoder model
     epoch -- current epoch number during training
     step -- current step number during training
-    test_input -- random tensor with shape (16, LATENT_DIM)
+    test_input -- random tensor with shape (8, LATENT_DIM)
     """
 
     # generate images from the test input
@@ -298,6 +306,24 @@ def generate_and_save_images(model, epoch, step, test_input):
     #plt.show()
 
 
+# Get the encoder, decoder and 'master' model (called vae)
+encoder, decoder, vae = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+
+# Define optimizer, metric, loss
+optimizer = tf.keras.optimizers.Adam()
+loss_metric = tf.keras.metrics.Mean()
+bce_loss = tf.keras.losses.BinaryCrossentropy()
+
+# Create a callback that saves the model's weights every 10 epochs
+checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
+cp_callback = tf.keras.callbacks.ModelCheckpoint(
+    filepath = checkpoint_path,
+    verbose = 1,
+    save_weights_only = True,
+    #save_freq = 'epoch'
+    save_freq = 10 * BATCH_SIZE
+)
+
 # Training loop
 
 # generate random vector as test input to the decoder
@@ -313,23 +339,9 @@ for epoch in range(epochs):
     print('Start of epoch %d' % (epoch,))
 
     # iterate over the batches of the dataset
-    for step, x_batch_train in enumerate(train_dataset):
-        with tf.GradientTape() as tape:
-
-            # feed a batch to the VAE model
-            reconstructed = vae(x_batch_train)
-
-            # compute reconstruction loss
-            flattened_inputs = tf.reshape(x_batch_train, shape=[-1])
-            flattened_outputs = tf.reshape(reconstructed, shape=[-1])
-            loss = bce_loss(flattened_inputs, flattened_outputs) * 25000
-
-            # add KLD regularization loss
-            loss += sum(vae.losses)
-
-            # get the gradients and update the weights
-        grads = tape.gradient(loss, vae.trainable_weights)
-        optimizer.apply_gradients(zip(grads, vae.trainable_weights))
+    for step, x_batch_train in tqdm(enumerate(train_dataset)):
+        # compute the loss, the gradients and update the model weights
+        loss = train_step(vae, optimizer, bce_loss, x_batch_train)
 
         # compute the loss metric
         loss_metric(loss)
@@ -339,3 +351,4 @@ for epoch in range(epochs):
             display.clear_output(wait=False)
             generate_and_save_images(decoder, epoch, step, random_vector_for_generation)
             print('Epoch: %s step: %s mean loss = %s' % (epoch, step, loss_metric.result().numpy()))
+
