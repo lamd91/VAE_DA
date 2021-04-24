@@ -45,6 +45,23 @@ def display_three_train_images(train_dataset):
             plt.imshow(np.squeeze(images[i].numpy()).astype('uint8'), cmap='gray')
     plt.show()
 
+
+# Load and prepare image dataset for training
+train_dataset, val_dataset, num_examples = get_datasets(map_image, test_size=0)
+print(f"Num of examples: {num_examples}")
+display_three_train_images(train_dataset)
+
+# Get image dimensions
+for input_images, images in train_dataset.take(1):
+    batch_size, height, width = images.shape[0], images.shape[1], images.shape[2]
+
+# Define decision variables for adding Cropping2D layers in decoder layers
+topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
+leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
+topcrop_after_upsampling2 = (height % 2 != 0)
+leftcrop_after_upsampling2 = (width % 2 != 0)
+
+
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
         """Generates a random sample and combines with the encoder output
@@ -128,23 +145,6 @@ def encoder_model(latent_dim, input_shape):
     model = tf.keras.Model(inputs, outputs=[mu, sigma, z])
 
     return model, conv_shape
-
-# Load and prepare image dataset
-train_dataset, val_dataset, num_examples = get_datasets(map_image, test_size=0)
-print(num_examples)
-display_three_train_images(train_dataset)
-
-# Get image dimensions
-for input_images, images in train_dataset.take(1):
-    batch_size, height, width = images.shape[0], images.shape[1], images.shape[2]
-
-# Define decision variables for adding Cropping2D layers in decoder layers
-topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
-leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
-topcrop_after_upsampling2 = (height % 2 != 0)
-leftcrop_after_upsampling2 = (width % 2 != 0)
-# print(topcrop_after_upsampling1, leftcrop_after_upsampling1,
-#       topcrop_after_upsampling2, leftcrop_after_upsampling2)
 
 def decoder_layers(inputs, conv_shape, topcrop_after_upsampling1, leftcrop_after_upsampling1,
                    topcrop_after_upsampling2, leftcrop_after_upsampling2):
@@ -329,7 +329,7 @@ vae.compile(
 )
 loss_metric = tf.keras.metrics.Mean()
 
-# Create a callback that saves the model's weights regularly during training
+# Create a callback that saves the model's weights every few epochs during training
 checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
 cp_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath = checkpoint_path,
@@ -344,6 +344,12 @@ random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
 # Initialize the helper function to display outputs from an untrained model
 generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 
-# Training loop
-vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback])
+# Create custom callback to display outputs (via helper function) at the end of each epoch of training
+class CustomCallback(tf.keras.callbacks.Callback):
+    def on_epoch_end(self, epoch, logs=None):
+        keys = list(logs.keys())
+        generate_and_save_images(decoder, epoch, 0, random_vector_for_generation)
+        print('End of epoch: {} - loss = {}'.format(epoch, logs[keys[0]]))
 
+# Training loop
+vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
