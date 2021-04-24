@@ -11,37 +11,35 @@ print(device_lib.list_local_devices())
 
 # Define global constants
 BATCH_SIZE = 32
-LATENT_DIM=2
+LATENT_DIM = 2
+EPOCHS = 100
 
 def map_image(image):
     '''returns a reshaped tensor from a given image'''
     image = tf.cast(image, dtype=tf.float32)
     image = tf.reshape(image, shape=(50, 500, 1,))
 
-    return image
+    return image, image
 
-def get_dataset(map_fn, is_validation=False):
+def get_datasets(map_fn, test_size):
     """Loads and prepares the dataset from a 2D array loaded from a text file."""
     dataset = np.transpose(np.loadtxt('data/iniMPSimEns_1000.txt'))
-    nb_images = dataset.shape[1]
-    if is_validation:
-        dataset = tf.data.Dataset.from_tensor_slices(dataset[int(nb_images*0.7):])
-    else:
-        dataset = tf.data.Dataset.from_tensor_slices(dataset[0:int(nb_images*0.7)])
+    num_examples = dataset.shape[0]
+    train_dataset = tf.data.Dataset.from_tensor_slices(dataset[0:int(num_examples*(1-test_size))])
+    val_dataset = tf.data.Dataset.from_tensor_slices(dataset[int(num_examples*(1-test_size)):])
 
-    dataset = dataset.map(map_fn)
+    train_dataset = train_dataset.map(map_fn)
+    val_dataset = val_dataset.map(map_fn)
 
-    if is_validation:
-        dataset = dataset.batch(BATCH_SIZE)
-    else:
-        dataset = dataset.shuffle(1024).batch(BATCH_SIZE)
+    train_dataset = train_dataset.batch(BATCH_SIZE)
+    val_dataset = val_dataset.shuffle(1024).batch(BATCH_SIZE)
 
-    return dataset
+    return train_dataset, val_dataset, num_examples
 
 def display_three_train_images(train_dataset):
     """Display 3 images from the training dataset"""
     plt.figure(figsize=(10, 14))
-    for images in train_dataset.take(1):
+    for input_images, images in train_dataset.take(1):
         for i in range(3):
             plt.subplot(3, 1, i+1)
             plt.imshow(np.squeeze(images[i].numpy()).astype('uint8'), cmap='gray')
@@ -132,12 +130,13 @@ def encoder_model(latent_dim, input_shape):
     return model, conv_shape
 
 # Load and prepare image dataset
-train_dataset = get_dataset(map_image)
+train_dataset, val_dataset, num_examples = get_datasets(map_image, test_size=0)
+print(num_examples)
 display_three_train_images(train_dataset)
 
 # Get image dimensions
-for images in train_dataset.take(1):
-    height, width = images.shape[1], images.shape[2]
+for input_images, images in train_dataset.take(1):
+    batch_size, height, width = images.shape[0], images.shape[1], images.shape[2]
 
 # Define decision variables for adding Cropping2D layers in decoder layers
 topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
@@ -260,23 +259,34 @@ def get_models(input_shape, latent_dim):
     vae = vae_model(encoder, decoder, input_shape=input_shape)
     return encoder, decoder, vae
 
-def train_step(model, optimizer, loss_object, x_batch):
-    with tf.GradientTape() as tape:
-        # feed a batch to the VAE model
-        reconstructed = model(x_batch)
-        # compute reconstruction loss
-        flattened_inputs = tf.reshape(x_batch, [-1])
-        flattened_outputs = tf.reshape(reconstructed, [-1])
-        loss = loss_object(flattened_inputs, flattened_outputs) \
-               * x_batch.shape[1] * x_batch.shape[2]
-        # add KLD regularization loss
-        loss += sum(model.losses)
+# Create a VAE class via model subclassing
+class VAE(tf.keras.Model):
+    def __init__(self, encoder, decoder, variational_autoencoder):
+        super(VAE, self).__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.vae = variational_autoencoder
 
-    # get the gradients and update model weights
-    grads = tape.gradient(loss, model.trainable_weights)
-    optimizer.apply_gradients(zip(grads, model.trainable_weights))
+    # override train step method
+    def train_step(self, images):
+        if isinstance(images, tuple):
+            input_images = images[0]
+        with tf.GradientTape() as tape:
+            # feed a batch to the VAE model
+            reconstructed = self.vae(input_images)
+            # compute reconstruction loss
+            flattened_inputs = tf.reshape(input_images, [-1])
+            flattened_outputs = tf.reshape(reconstructed, [-1])
+            loss = self.compiled_loss(flattened_inputs, flattened_outputs) \
+                   * input_images.shape[1] * input_images.shape[2]
+            # add KLD regularization loss
+            loss += sum(self.vae.losses)
 
-    return loss
+        # compute the gradients and update the model weights
+        grads = tape.gradient(loss, self.vae.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.vae.trainable_weights))
+
+        return {"loss": loss}
 
 def generate_and_save_images(model, epoch, step, test_input):
     """Helper function to plot our 8 images
@@ -307,47 +317,33 @@ def generate_and_save_images(model, epoch, step, test_input):
 
 
 # Get the encoder, decoder and 'master' model (called vae)
-encoder, decoder, vae = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+
+# Instantiate VAE class
+vae = VAE(encoder, decoder, var_autoencoder)
 
 # Define optimizer, metric, loss
-optimizer = tf.keras.optimizers.Adam()
+vae.compile(
+    optimizer = tf.keras.optimizers.Adam(),
+    loss = tf.keras.losses.BinaryCrossentropy()
+)
 loss_metric = tf.keras.metrics.Mean()
-bce_loss = tf.keras.losses.BinaryCrossentropy()
 
-# Create a callback that saves the model's weights every 10 epochs
+# Create a callback that saves the model's weights regularly during training
 checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
 cp_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath = checkpoint_path,
     verbose = 1,
     save_weights_only = True,
-    save_freq = 10 * BATCH_SIZE
+    save_freq = (num_examples // BATCH_SIZE) * 5
 )
 
-# Training loop
-
-# generate random vector as test input to the decoder
+# Generate random vector as test input to the decoder
 random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
 
-# number of epochs
-epochs = 100
-
-# initialize the helper function to display outputs from an untrained model
+# Initialize the helper function to display outputs from an untrained model
 generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 
-for epoch in range(epochs):
-    print('Start of epoch %d' % (epoch,))
-
-    # iterate over the batches of the dataset
-    for step, x_batch_train in tqdm(enumerate(train_dataset)):
-        # compute the loss, the gradients and update the model weights
-        loss = train_step(vae, optimizer, bce_loss, x_batch_train)
-
-        # compute the loss metric
-        loss_metric(loss)
-
-        # display outputs every 100 steps
-        if step % 100 == 0:
-            display.clear_output(wait=False)
-            generate_and_save_images(decoder, epoch, step, random_vector_for_generation)
-            print('Epoch: %s step: %s mean loss = %s' % (epoch, step, loss_metric.result().numpy()))
+# Training loop
+vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback])
 
