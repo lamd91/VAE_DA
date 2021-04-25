@@ -1,10 +1,7 @@
-#import os
-#os.environ["CUDA_VISIBLE_DEVICES"]="-1" # uncomment if you don't want to use the GPU
 import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
-from IPython import display
-from tqdm import tqdm
+import math
 from tensorflow.python.client import device_lib
 
 print(device_lib.list_local_devices())
@@ -259,7 +256,9 @@ def get_models(input_shape, latent_dim):
     vae = vae_model(encoder, decoder, input_shape=input_shape)
     return encoder, decoder, vae
 
-# Create a VAE class via model subclassing
+# Define a VAE class via model subclassing
+loss_metrics = tf.keras.metrics.Mean()
+
 class VAE(tf.keras.Model):
     def __init__(self, encoder, decoder, variational_autoencoder):
         super(VAE, self).__init__()
@@ -267,7 +266,7 @@ class VAE(tf.keras.Model):
         self.decoder = decoder
         self.vae = variational_autoencoder
 
-    # override train step method
+    # override train_step method
     def train_step(self, images):
         if isinstance(images, tuple):
             input_images = images[0]
@@ -286,7 +285,28 @@ class VAE(tf.keras.Model):
         grads = tape.gradient(loss, self.vae.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.vae.trainable_weights))
 
-        return {"loss": loss}
+        # update metrics
+        loss_metrics.update_state(loss)
+
+        # return a dict mapping metrics names to current value
+        return {'loss': loss_metrics.result()}
+
+    # override test_step method
+    def test_step(self, images):
+        if isinstance(images, tuple):
+            input_images = images[0]
+        # compute predictions
+        reconstructed = self.vae(input_images)
+        # compute loss
+        flattened_inputs = tf.reshape(input_images, [-1])
+        flattened_outputs = tf.reshape(reconstructed, [-1])
+        loss = self.compiled_loss(flattened_inputs, flattened_outputs) \
+               * input_images.shape[1] * input_images.shape[2]
+        # add KLD regularization loss
+        loss += sum(self.vae.losses)
+        # update metrics
+        loss_metrics.update_state(loss)
+        return {'loss': loss_metrics.result()}
 
 def generate_and_save_images(model, epoch, step, test_input):
     """Helper function to plot our 8 images
@@ -315,41 +335,59 @@ def generate_and_save_images(model, epoch, step, test_input):
     plt.savefig('image_at_epoch_{:04d}_step{:04d}.png'.format(epoch, step))
     #plt.show()
 
-
-# Get the encoder, decoder and 'master' model (called vae)
-encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
-
-# Instantiate VAE class
-vae = VAE(encoder, decoder, var_autoencoder)
-
-# Define optimizer, metric, loss
-vae.compile(
-    optimizer = tf.keras.optimizers.Adam(),
-    loss = tf.keras.losses.BinaryCrossentropy()
-)
-loss_metric = tf.keras.metrics.Mean()
-
 # Create a callback that saves the model's weights every few epochs during training
 checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
 cp_callback = tf.keras.callbacks.ModelCheckpoint(
     filepath = checkpoint_path,
     verbose = 1,
     save_weights_only = True,
-    save_freq = (num_examples // BATCH_SIZE) * 5
+    save_freq = math.ceil(num_examples/BATCH_SIZE) * 10
 )
-
-# Generate random vector as test input to the decoder
-random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
-
-# Initialize the helper function to display outputs from an untrained model
-generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 
 # Create custom callback to display outputs (via helper function) at the end of each epoch of training
 class CustomCallback(tf.keras.callbacks.Callback):
     def on_epoch_end(self, epoch, logs=None):
         keys = list(logs.keys())
-        generate_and_save_images(decoder, epoch, 0, random_vector_for_generation)
-        print('End of epoch: {} - loss = {}'.format(epoch, logs[keys[0]]))
+        # Generate random vector as test input to the decoder
+        random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
+        # Generate and save images
+        generate_and_save_images(decoder, epoch, math.ceil(num_examples/BATCH_SIZE), random_vector_for_generation)
+        print('End of epoch {} - mean loss = {}'.format(epoch, logs[keys[0]]))
 
-# Training loop
-vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# Get the encoder, decoder and 'master' model (called vae)
+encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+
+## Instantiate VAE class
+#vae = VAE(encoder, decoder, var_autoencoder)
+#
+# # Compile model
+# vae.compile(
+#     optimizer = tf.keras.optimizers.Adam(),
+#     loss = tf.keras.losses.BinaryCrossentropy()
+# )
+#
+# # Generate random vector as test input to the decoder
+# random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
+#
+# # Initialize the helper function to display outputs from an untrained model
+# generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
+#
+# # Training loop
+# vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
+
+# Create new instance of VAE class
+new_vae = VAE(encoder, decoder, var_autoencoder)
+
+# Load weights from last checkpoint
+checkpoint_dir = 'checkpoint'
+latest = tf.train.latest_checkpoint(checkpoint_dir)
+print(latest)
+new_vae.load_weights(latest)
+new_vae.compile(
+    optimizer = tf.keras.optimizers.Adam(),
+    loss = tf.keras.losses.BinaryCrossentropy()
+)
+new_vae.evaluate(train_dataset, verbose=1)
+
+# Resume training
+new_vae.fit(train_dataset, epochs=20, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
