@@ -2,14 +2,11 @@ import numpy as np
 import tensorflow as tf
 from matplotlib import pyplot as plt
 import math
-from tensorflow.python.client import device_lib
-
-print(device_lib.list_local_devices())
 
 # Define global constants
 BATCH_SIZE = 32
 LATENT_DIM = 2
-EPOCHS = 100
+EPOCHS = 10
 
 def map_image(image):
     '''returns a reshaped tensor from a given image'''
@@ -22,30 +19,44 @@ def get_datasets(map_fn, test_size):
     """Loads and prepares the dataset from a 2D array loaded from a text file."""
     dataset = np.transpose(np.loadtxt('data/iniMPSimEns_1000.txt'))
     num_examples = dataset.shape[0]
-    train_dataset = tf.data.Dataset.from_tensor_slices(dataset[0:int(num_examples*(1-test_size))])
+    original_train_dataset = tf.data.Dataset.from_tensor_slices(dataset[0:int(num_examples*(1-test_size))])
     val_dataset = tf.data.Dataset.from_tensor_slices(dataset[int(num_examples*(1-test_size)):])
 
-    train_dataset = train_dataset.map(map_fn)
+    original_train_dataset = original_train_dataset.map(map_fn)
     val_dataset = val_dataset.map(map_fn)
 
-    train_dataset = train_dataset.batch(BATCH_SIZE)
+    train_dataset = original_train_dataset.batch(num_examples)
+    original_train_dataset = original_train_dataset.batch(BATCH_SIZE)
     val_dataset = val_dataset.shuffle(1024).batch(BATCH_SIZE)
 
-    return train_dataset, val_dataset, num_examples
+    train_datagen = tf.keras.preprocessing.image.ImageDataGenerator(
+        width_shift_range = 0.4,
+        horizontal_flip = True,
+        vertical_flip = True,
+        shear_range=0.2,
+        fill_mode='nearest'
+    )
+
+    for input_images, images in train_dataset:
+         x, y = input_images, images
+
+    train_generator = train_datagen.flow(x, y, batch_size=BATCH_SIZE)
+
+    return train_generator, original_train_dataset, num_examples
 
 def display_three_train_images(train_dataset):
     """Display 3 images from the training dataset"""
     plt.figure(figsize=(10, 14))
-    for input_images, images in train_dataset.take(1):
+    for input_images, _ in train_dataset.take(1):
         for i in range(3):
             plt.subplot(3, 1, i+1)
-            plt.imshow(np.squeeze(images[i].numpy()).astype('uint8'), cmap='gray')
+            plt.imshow(np.squeeze(input_images[i]), cmap='gray')
     plt.show()
 
 
 # Load and prepare image dataset for training
-train_dataset, val_dataset, num_examples = get_datasets(map_image, test_size=0)
-print(f"Num of examples: {num_examples}")
+train_generator, train_dataset, num_examples = get_datasets(map_image, test_size=0)
+print(f"Num of original examples: {num_examples}")
 display_three_train_images(train_dataset)
 
 # Get image dimensions
@@ -269,15 +280,15 @@ class VAE(tf.keras.Model):
     # override train_step method
     def train_step(self, images):
         if isinstance(images, tuple):
-            input_images = images[0]
+            images = images[0]
         with tf.GradientTape() as tape:
             # feed a batch to the VAE model
-            reconstructed = self.vae(input_images)
+            reconstructed = self.vae(images)
             # compute reconstruction loss
-            flattened_inputs = tf.reshape(input_images, [-1])
+            flattened_inputs = tf.reshape(images, [-1])
             flattened_outputs = tf.reshape(reconstructed, [-1])
             loss = self.compiled_loss(flattened_inputs, flattened_outputs) \
-                   * input_images.shape[1] * input_images.shape[2]
+                   * images.shape[1] * images.shape[2]
             # add KLD regularization loss
             loss += sum(self.vae.losses)
 
@@ -294,19 +305,24 @@ class VAE(tf.keras.Model):
     # override test_step method
     def test_step(self, images):
         if isinstance(images, tuple):
-            input_images = images[0]
+            images = images[0]
         # compute predictions
-        reconstructed = self.vae(input_images)
+        reconstructed = self.vae(images)
         # compute loss
-        flattened_inputs = tf.reshape(input_images, [-1])
+        flattened_inputs = tf.reshape(images, [-1])
         flattened_outputs = tf.reshape(reconstructed, [-1])
         loss = self.compiled_loss(flattened_inputs, flattened_outputs) \
-               * input_images.shape[1] * input_images.shape[2]
+               * images.shape[1] * images.shape[2]
         # add KLD regularization loss
         loss += sum(self.vae.losses)
         # update metrics
         loss_metrics.update_state(loss)
         return {'loss': loss_metrics.result()}
+
+    def call(self, images):
+        if isinstance(images, tuple):
+            images = images[0]
+        return self.vae(images)
 
 def generate_and_save_images(model, epoch, step, test_input):
     """Helper function to plot our 8 images
@@ -333,7 +349,21 @@ def generate_and_save_images(model, epoch, step, test_input):
     # tight_layout minimizes the overlap between 2 sub-plots
     fig.suptitle("epoch: {}, step: {}".format(epoch, step))
     plt.savefig('image_at_epoch_{:04d}_step{:04d}.png'.format(epoch, step))
-    #plt.show()
+
+def show_original_reconstructed_images(model, train_dataset):
+    plt.figure(figsize=(10, 14))
+    for input_images, _ in train_dataset.take(1):
+        reconstructed = model(input_images)
+        k = 0
+        for i in range(5):
+            reconstructed_categorized = np.where(reconstructed >= 0.5, 1, 0)
+            plt.subplot(5, 2, k+1)
+            plt.imshow(input_images[i], cmap='gray')
+            plt.subplot(5, 2, k+2)
+            #plt.imshow(reconstructed_categorized[i], cmap='gray')
+            plt.imshow(reconstructed[i], cmap='gray')
+            k += 2
+        plt.savefig("reconstructed_images.png")
 
 # Create a callback that saves the model's weights every few epochs during training
 checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
@@ -357,12 +387,12 @@ class CustomCallback(tf.keras.callbacks.Callback):
 # Get the encoder, decoder and 'master' model (called vae)
 encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
 
-## Instantiate VAE class
-#vae = VAE(encoder, decoder, var_autoencoder)
+# # Instantiate VAE class
+# vae = VAE(encoder, decoder, var_autoencoder)
 #
 # # Compile model
 # vae.compile(
-#     optimizer = tf.keras.optimizers.Adam(),
+#     optimizer = tf.keras.optimizers.Adam(lr=0.002),
 #     loss = tf.keras.losses.BinaryCrossentropy()
 # )
 #
@@ -373,7 +403,8 @@ encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent
 # generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 #
 # # Training loop
-# vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# #vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
 
 # Create new instance of VAE class
 new_vae = VAE(encoder, decoder, var_autoencoder)
@@ -387,7 +418,14 @@ new_vae.compile(
     optimizer = tf.keras.optimizers.Adam(),
     loss = tf.keras.losses.BinaryCrossentropy()
 )
-new_vae.evaluate(train_dataset, verbose=1)
+#new_vae.evaluate(train_dataset, verbose=1)
 
 # Resume training
-new_vae.fit(train_dataset, epochs=20, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
+##new_vae.fit(train_dataset, epochs=10, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
+new_vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
+
+# Show reconstructed images
+show_original_reconstructed_images(var_autoencoder, train_dataset)
+
+
+
