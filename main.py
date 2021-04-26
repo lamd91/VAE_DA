@@ -6,12 +6,15 @@ import math
 # Define global constants
 BATCH_SIZE = 32
 LATENT_DIM = 2
-EPOCHS = 10
+EPOCHS = 20
+IMAGE_HEIGHT = 50
+IMAGE_WIDTH = 500
+NUM_CHANNELS = 1
 
 def map_image(image):
     '''returns a reshaped tensor from a given image'''
     image = tf.cast(image, dtype=tf.float32)
-    image = tf.reshape(image, shape=(50, 500, 1,))
+    image = tf.reshape(image, shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS,))
 
     return image, image
 
@@ -59,15 +62,11 @@ train_generator, train_dataset, num_examples = get_datasets(map_image, test_size
 print(f"Num of original examples: {num_examples}")
 display_three_train_images(train_dataset)
 
-# Get image dimensions
-for input_images, images in train_dataset.take(1):
-    batch_size, height, width = images.shape[0], images.shape[1], images.shape[2]
-
 # Define decision variables for adding Cropping2D layers in decoder layers
-topcrop_after_upsampling1 = (round(height/2) % 2 != 0)
-leftcrop_after_upsampling1 = (round(width/2) % 2 != 0)
-topcrop_after_upsampling2 = (height % 2 != 0)
-leftcrop_after_upsampling2 = (width % 2 != 0)
+topcrop_after_upsampling1 = (round(IMAGE_HEIGHT/2) % 2 != 0)
+leftcrop_after_upsampling1 = (round(IMAGE_WIDTH/2) % 2 != 0)
+topcrop_after_upsampling2 = (IMAGE_HEIGHT % 2 != 0)
+leftcrop_after_upsampling2 = (IMAGE_WIDTH % 2 != 0)
 
 
 class Sampling(tf.keras.layers.Layer):
@@ -385,14 +384,14 @@ class CustomCallback(tf.keras.callbacks.Callback):
         print('End of epoch {} - mean loss = {}'.format(epoch, logs[keys[0]]))
 
 # Get the encoder, decoder and 'master' model (called vae)
-encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent_dim=LATENT_DIM)
+encoder, decoder, var_autoencoder = get_models(input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS,), latent_dim=LATENT_DIM)
 
 # # Instantiate VAE class
 # vae = VAE(encoder, decoder, var_autoencoder)
 #
 # # Compile model
 # vae.compile(
-#     optimizer = tf.keras.optimizers.Adam(lr=0.002),
+#     optimizer = tf.keras.optimizers.Adam(lr=0.0001),
 #     loss = tf.keras.losses.BinaryCrossentropy()
 # )
 #
@@ -403,8 +402,8 @@ encoder, decoder, var_autoencoder = get_models(input_shape=(50, 500, 1,), latent
 # generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
 #
 # # Training loop
-# #vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
-# vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# #vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
 
 # Create new instance of VAE class
 new_vae = VAE(encoder, decoder, var_autoencoder)
@@ -421,8 +420,8 @@ new_vae.compile(
 #new_vae.evaluate(train_dataset, verbose=1)
 
 # Resume training
-##new_vae.fit(train_dataset, epochs=10, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
-new_vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
+new_vae.fit(train_dataset, epochs=10, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
+#new_vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
 
 # Show reconstructed images
 show_original_reconstructed_images(var_autoencoder, train_dataset)
