@@ -6,10 +6,16 @@ import math
 # Define global constants
 BATCH_SIZE = 32
 LATENT_DIM = 2
-EPOCHS = 20
+EPOCHS = 10
 IMAGE_HEIGHT = 50
 IMAGE_WIDTH = 500
 NUM_CHANNELS = 1
+
+# Define decision variables for adding Cropping2D layers in decoder layers
+topcrop_after_upsampling1 = (round(IMAGE_HEIGHT/2) % 2 != 0)
+leftcrop_after_upsampling1 = (round(IMAGE_WIDTH/2) % 2 != 0)
+topcrop_after_upsampling2 = (IMAGE_HEIGHT % 2 != 0)
+leftcrop_after_upsampling2 = (IMAGE_WIDTH % 2 != 0)
 
 def map_image(image):
     '''returns a reshaped tensor from a given image'''
@@ -45,7 +51,7 @@ def get_datasets(map_fn, test_size):
 
     train_generator = train_datagen.flow(x, y, batch_size=BATCH_SIZE)
 
-    return train_generator, original_train_dataset, num_examples
+    return train_generator, original_train_dataset, val_dataset, num_examples
 
 def display_three_train_images(train_dataset):
     """Display 3 images from the training dataset"""
@@ -55,19 +61,6 @@ def display_three_train_images(train_dataset):
             plt.subplot(3, 1, i+1)
             plt.imshow(np.squeeze(input_images[i]), cmap='gray')
     plt.show()
-
-
-# Load and prepare image dataset for training
-train_generator, train_dataset, num_examples = get_datasets(map_image, test_size=0)
-print(f"Num of original examples: {num_examples}")
-display_three_train_images(train_dataset)
-
-# Define decision variables for adding Cropping2D layers in decoder layers
-topcrop_after_upsampling1 = (round(IMAGE_HEIGHT/2) % 2 != 0)
-leftcrop_after_upsampling1 = (round(IMAGE_WIDTH/2) % 2 != 0)
-topcrop_after_upsampling2 = (IMAGE_HEIGHT % 2 != 0)
-leftcrop_after_upsampling2 = (IMAGE_WIDTH % 2 != 0)
-
 
 class Sampling(tf.keras.layers.Layer):
     def call(self, inputs):
@@ -364,6 +357,14 @@ def show_original_reconstructed_images(model, train_dataset):
             k += 2
         plt.savefig("reconstructed_images.png")
 
+tf.random.set_seed(42)
+np.random.seed(42)
+
+# Load and prepare image dataset for training
+train_generator, train_dataset, val_dataset, num_examples = get_datasets(map_image, test_size=0.2)
+print(f"Num of original examples: {num_examples}")
+#display_three_train_images(train_dataset)
+
 # Create a callback that saves the model's weights every few epochs during training
 checkpoint_path = 'checkpoint/cp-cp{epoch:04d}.ckpt'
 cp_callback = tf.keras.callbacks.ModelCheckpoint(
@@ -386,45 +387,46 @@ class CustomCallback(tf.keras.callbacks.Callback):
 # Get the encoder, decoder and 'master' model (called vae)
 encoder, decoder, var_autoencoder = get_models(input_shape=(IMAGE_HEIGHT, IMAGE_WIDTH, NUM_CHANNELS,), latent_dim=LATENT_DIM)
 
-# # Instantiate VAE class
-# vae = VAE(encoder, decoder, var_autoencoder)
-#
-# # Compile model
-# vae.compile(
-#     optimizer = tf.keras.optimizers.Adam(lr=0.0001),
-#     loss = tf.keras.losses.BinaryCrossentropy()
-# )
-#
-# # Generate random vector as test input to the decoder
-# random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
-#
-# # Initialize the helper function to display outputs from an untrained model
-# generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
-#
-# # Training loop
-# vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, callbacks=[cp_callback, CustomCallback()])
-# #vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# Instantiate VAE class
+vae = VAE(encoder, decoder, var_autoencoder)
 
-# Create new instance of VAE class
-new_vae = VAE(encoder, decoder, var_autoencoder)
-
-# Load weights from last checkpoint
-checkpoint_dir = 'checkpoint'
-latest = tf.train.latest_checkpoint(checkpoint_dir)
-print(latest)
-new_vae.load_weights(latest)
-new_vae.compile(
-    optimizer = tf.keras.optimizers.Adam(),
+# Compile model
+vae.compile(
+    optimizer = tf.keras.optimizers.Adam(lr=1e-4),
     loss = tf.keras.losses.BinaryCrossentropy()
 )
-#new_vae.evaluate(train_dataset, verbose=1)
 
-# Resume training
-new_vae.fit(train_dataset, epochs=10, batch_size=BATCH_SIZE,  verbose=1, callbacks=[cp_callback, CustomCallback()])
-#new_vae.fit(train_generator, epochs=EPOCHS, verbose=1, callbacks=[cp_callback, CustomCallback()])
+# Generate random vector as test input to the decoder
+random_vector_for_generation = tf.random.normal(shape=[8, LATENT_DIM])
 
-# Show reconstructed images
-show_original_reconstructed_images(var_autoencoder, train_dataset)
+# Initialize the helper function to display outputs from an untrained model
+generate_and_save_images(decoder, 0, 0, random_vector_for_generation)
+
+# Training loop
+vae.fit(train_dataset, epochs=EPOCHS, batch_size=BATCH_SIZE, verbose=1, validation_data=val_dataset,
+       callbacks=[cp_callback, CustomCallback()])
+#vae.fit(train_generator, epochs=EPOCHS, verbose=1, validation_data=val_dataset, callbacks=[cp_callback, CustomCallback()])
+
+# # Create new instance of VAE class
+# new_vae = VAE(encoder, decoder, var_autoencoder)
+#
+# # Load weights from last checkpoint
+# checkpoint_dir = 'checkpoint'
+# latest = tf.train.latest_checkpoint(checkpoint_dir)
+# print(latest)
+# new_vae.load_weights(latest)
+# new_vae.compile(
+#     optimizer = tf.keras.optimizers.Adam(1e-4),
+#     loss = tf.keras.losses.BinaryCrossentropy()
+# )
+# #new_vae.evaluate(train_dataset, verbose=1)
+#
+# # Resume training
+# new_vae.fit(x=train_dataset, epochs=10, batch_size=BATCH_SIZE,  verbose=1, validation_data=val_dataset, callbacks=[cp_callback, CustomCallback()])
+# #new_vae.fit(train_generator, epochs=EPOCHS, verbose=1, validation_data=val_dataset, callbacks=[cp_callback, CustomCallback()])
+#
+# # Show reconstructed images
+# show_original_reconstructed_images(var_autoencoder, train_dataset)
 
 
 
